@@ -22,51 +22,62 @@ The solution is intentionally backend-only, as the evaluation is primarily done 
 ---
 
 ## Deployed Application
-Base URL:  
+**Base URL:**  
 https://pastebin-lite-sbof.onrender.com
 
 ---
 
-## API Endpoints
+## Health Check
+**GET** `/api/healthz`
 
-### Create Paste
-**POST** `/api/paste`
+Response:
+```json
+{ "ok": true }
+API Endpoints
+
+POST /api/pastes
 
 Request Body:
-```json
+json
 {
   "content": "Hello Aganitha",
-  "expiresInSeconds": 300,
-  "maxViews": 3
-}
- Response:
-{
-  "url": "https://pastebin-lite-sbof.onrender.com/api/paste/abcd1234"
+  "ttl_seconds": 300,
+  "max_views": 3
 }
 
-GET /api/paste/:slug
+Response:
+json
+
+{
+  "id": "abcd1234",
+  "url": "https://pastebin-lite-sbof.onrender.com/p/abcd1234"
+}
+
+Fetch Paste (API)
+GET /api/pastes/:id
 
 Success Response:
 
 json
 {
-  "content": "Hello Aganitha"
+  "content": "Hello Aganitha",
+  "remaining_views": 2,
+  "expires_at": "2026-01-01T00:00:00.000Z"
 }
-Error Responses:
+Error Response:
 
-404 – Paste not found
+404 Not Found (paste expired or does not exist)
 
-410 – Paste expired (time or view limit reached)
+View Paste (HTML)
+GET /p/:id
 
-json
-
-{
-  "error": "Paste expired"
-}
+Returns the paste content rendered as HTML.
 
 Expiry Logic
-Time-based expiry: Content expires after the specified number of seconds
+Time-based expiry: Paste expires after the specified number of seconds (ttl_seconds)
 
-View-based expiry: Content expires once the maximum view count is reached
+View-based expiry: Paste expires once the maximum number of views (max_views) is reached
 
-Expiry is enforced at read time to keep the system simple and stateless
+Expiry is enforced at read time
+
+All unavailable pastes return 404 Not Found
