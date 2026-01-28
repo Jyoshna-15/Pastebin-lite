@@ -1,139 +1,127 @@
-// const { PrismaClient } = require('@prisma/client');
-// const prisma = new PrismaClient();
-// const generateSlug = require('../utils/slug');
-
-// exports.createPaste = async (req, res) => {
-//   try {
-//     const { content, expiresInSeconds, maxViews } = req.body;
-
-//     if (!content) {
-//       return res.status(400).json({ error: 'Content is required' });
-//     }
-
-//     const paste = await prisma.paste.create({
-//       data: {
-//         content,
-//         slug: generateSlug(),
-//         expiresAt: expiresInSeconds
-//           ? new Date(Date.now() + expiresInSeconds * 1000)
-//           : null,
-//         maxViews: maxViews || null
-//       }
-//     });
-
-//     res.status(201).json({
-//       url: `${req.protocol}://${req.get('host')}/api/paste/${paste.slug}`
-//     });
-//   } catch {
-//     res.status(500).json({ error: 'Internal server error' });
-//   }
-// };
-
-// exports.getPaste = async (req, res) => {
-//   try {
-//     const paste = await prisma.paste.findUnique({
-//       where: { slug: req.params.slug }
-//     });
-
-//     if (!paste) {
-//       return res.status(404).json({ error: 'Paste not found' });
-//     }
-
-//     if (
-//       (paste.expiresAt && new Date() > paste.expiresAt) ||
-//       (paste.maxViews && paste.currentViews >= paste.maxViews)
-//     ) {
-//       return res.status(410).json({ error: 'Paste expired' });
-//     }
-
-//     await prisma.paste.update({
-//       where: { slug: paste.slug },
-//       data: { currentViews: { increment: 1 } }
-//     });
-
-//     res.json({ content: paste.content });
-//   } catch {
-//     res.status(500).json({ error: 'Internal server error' });
-//   }
-// };
-
-
-
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 const generateSlug = require('../utils/slug');
+const { getNow } = require('../utils/time');
 
+// CREATE PASTE
 exports.createPaste = async (req, res) => {
   try {
-    const { content, expiresInSeconds, maxViews } = req.body;
+    const { content, ttl_seconds, max_views } = req.body;
 
-    // Required field validation
-    if (!content) {
-      return res.status(400).json({ error: 'Content is required' });
+    if (!content || typeof content !== 'string' || content.trim() === '') {
+      return res.status(400).json({ error: 'Invalid content' });
     }
 
-    // Optional field validations
-    if (expiresInSeconds !== undefined && expiresInSeconds <= 0) {
-      return res
-        .status(400)
-        .json({ error: 'expiresInSeconds must be greater than 0' });
+    if (ttl_seconds !== undefined && (!Number.isInteger(ttl_seconds) || ttl_seconds < 1)) {
+      return res.status(400).json({ error: 'Invalid ttl_seconds' });
     }
 
-    if (maxViews !== undefined && maxViews <= 0) {
-      return res
-        .status(400)
-        .json({ error: 'maxViews must be greater than 0' });
+    if (max_views !== undefined && (!Number.isInteger(max_views) || max_views < 1)) {
+      return res.status(400).json({ error: 'Invalid max_views' });
     }
+
+    const now = getNow(req);
+    const slug = generateSlug();
 
     const paste = await prisma.paste.create({
       data: {
         content,
-        slug: generateSlug(),
-        expiresAt: expiresInSeconds
-          ? new Date(Date.now() + expiresInSeconds * 1000)
-          : null,
-        maxViews: maxViews ?? null
+        slug,
+        expiresAt: ttl_seconds ? new Date(now.getTime() + ttl_seconds * 1000) : null,
+        maxViews: max_views ?? null
       }
     });
 
     return res.status(201).json({
-      url: `${req.protocol}://${req.get('host')}/api/paste/${paste.slug}`
+      id: paste.slug,
+      url: `${req.protocol}://${req.get('host')}/p/${paste.slug}`
     });
   } catch (err) {
     console.error(err);
-    return res.status(500).json({ error: 'Internal server error' });
+    return res.status(500).json({ error: 'Internal error' });
   }
 };
 
-exports.getPaste = async (req, res) => {
+// FETCH PASTE (API)
+// FETCH PASTE (API)
+exports.fetchPaste = async (req, res) => {
   try {
-    const { slug } = req.params;
-
     const paste = await prisma.paste.findUnique({
-      where: { slug }
+      where: { slug: req.params.id }
     });
 
     if (!paste) {
-      return res.status(404).json({ error: 'Paste not found' });
+      return res.status(404).json({ error: 'Not found' });
     }
 
-    // Expiry checks
+    const now = getNow(req);
+
     if (
-      (paste.expiresAt && new Date() > paste.expiresAt) ||
+      (paste.expiresAt && now > paste.expiresAt) ||
       (paste.maxViews !== null && paste.currentViews >= paste.maxViews)
     ) {
-      return res.status(410).json({ error: 'Paste expired' });
+      return res.status(404).json({ error: 'Not found' });
     }
 
-    // Increment views only after successful validation
-    await prisma.paste.update({
-      where: { slug },
+    // increment views and get updated row
+    const updated = await prisma.paste.update({
+      where: { slug: paste.slug },
       data: { currentViews: { increment: 1 } }
     });
 
-    return res.json({ content: paste.content });
+    return res.json({
+      content: updated.content,
+      remaining_views:
+        updated.maxViews === null
+          ? null
+          : updated.maxViews - updated.currentViews,
+      expires_at: updated.expiresAt
+    });
   } catch (err) {
     console.error(err);
-    return res.status(500).json({ error: 'Internal server error' });
+    return res.status(500).json({ error: 'Internal error' });
   }
 };
+
+  
+
+// VIEW PASTE (HTML)
+exports.viewPasteHtml = async (req, res) => {
+  try {
+    const paste = await prisma.paste.findUnique({
+      where: { slug: req.params.id }
+    });
+
+    if (!paste) {
+      return res.status(404).send('Not Found');
+    }
+
+    const now = getNow(req);
+
+    if (
+      (paste.expiresAt && now > paste.expiresAt) ||
+      (paste.maxViews !== null && paste.currentViews >= paste.maxViews)
+    ) {
+      return res.status(404).send('Not Found');
+    }
+
+    await prisma.paste.update({
+      where: { slug: paste.slug },
+      data: { currentViews: { increment: 1 } }
+    });
+
+    res.setHeader('Content-Type', 'text/html');
+    return res.send(`<pre>${escapeHtml(paste.content)}</pre>`);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).send('Internal error');
+  }
+};
+
+// SAFE HTML ESCAPE
+function escapeHtml(text) {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
